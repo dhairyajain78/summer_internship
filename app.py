@@ -1,91 +1,136 @@
-# app.py - Deployment Optimized Version
 import streamlit as st
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, confusion_matrix
-import matplotlib
-matplotlib.use('Agg')  # Critical for deployment
+from sklearn.metrics import accuracy_score
 import matplotlib.pyplot as plt
-import seaborn as sns
+import matplotlib
+matplotlib.use('Agg')  # Required for smooth deployment
 
-@st.cache_data  # Cache data for better performance
-def load_data():
+# Configure app
+st.set_page_config(page_title="Loan Approval Predictor", layout="centered")
+st.title("🏦 Bank Loan Approval Prediction")
+st.write("""
+Predict whether a loan application should be approved based on applicant details.
+""")
+
+# Generate sample data
+@st.cache_data
+def generate_loan_data():
     np.random.seed(42)
-    n_customers = 200
+    n_applicants = 300
+    
     data = pd.DataFrame({
-        'Tenure': np.random.randint(1, 72, n_customers),
-        'MonthlyCharges': np.random.uniform(20, 100, n_customers).round(2),
-        'TotalCharges': np.random.uniform(50, 5000, n_customers).round(2),
-        'Contract': np.random.choice(['Month-to-month', 'One year', 'Two year'], n_customers),
-        'OnlineSecurity': np.random.choice(['Yes', 'No', 'No internet service'], n_customers),
+        'Age': np.random.randint(18, 70, n_applicants),
+        'Income': np.random.randint(20000, 150000, n_applicants),
+        'LoanAmount': np.random.randint(5000, 300000, n_applicants),
+        'CreditScore': np.random.randint(300, 850, n_applicants),
+        'MonthsEmployed': np.random.randint(3, 120, n_applicants),
+        'LoanTerm': np.random.choice([12, 24, 36, 60], n_applicants),
+        'HasDefaulted': np.random.choice([0, 1], n_applicants, p=[0.8, 0.2])
     })
-    conditions = [
-        (data['Contract'] == 'Month-to-month') & (data['Tenure'] < 12),
-        (data['MonthlyCharges'] > 70) & (data['OnlineSecurity'] == 'No')
-    ]
-    data['Churn'] = np.select(conditions, [1, 1], default=0)
+    
+    # Create approval logic
+    approval_conditions = (
+        (data['Income'] > 40000) &
+        (data['CreditScore'] > 600) &
+        (data['LoanAmount'] < data['Income'] * 2) &
+        (data['HasDefaulted'] == 0)
+    )
+    data['Approved'] = np.where(approval_conditions, 1, 0)
+    
     return data
 
-# Simplified UI setup
-st.set_page_config(page_title="Churn Predictor", layout="wide")
-st.title("📉 Customer Churn Prediction")
-df = load_data()
+df = generate_loan_data()
 
-# Input widgets in columns
-col1, col2 = st.columns(2)
-with col1:
-    tenure = st.slider('Tenure (months)', 1, 72, 12)
-    monthly_charges = st.slider('Monthly Charges ($)', 20, 100, 50)
-with col2:
-    contract = st.selectbox('Contract', ('Month-to-month', 'One year', 'Two year'))
-    online_security = st.selectbox('Online Security', ('Yes', 'No', 'No internet service'))
+# User input form
+with st.form("loan_form"):
+    st.subheader("Applicant Information")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        age = st.number_input("Age", 18, 100, 30)
+        income = st.number_input("Annual Income ($)", 20000, 500000, 60000)
+        loan_amount = st.number_input("Loan Amount ($)", 1000, 500000, 25000)
+    with col2:
+        credit_score = st.slider("Credit Score", 300, 850, 700)
+        employed_months = st.number_input("Months Employed", 0, 120, 24)
+        has_defaulted = st.selectbox("Previous Default?", ["No", "Yes"])
+    
+    submitted = st.form_submit_button("Predict Approval")
 
-# Preprocessing function
-@st.cache_data
-def preprocess(df):
-    df = pd.get_dummies(df, columns=['Contract', 'OnlineSecurity'])
-    return df
+# Preprocessing
+def preprocess_input(age, income, loan_amount, credit_score, employed_months, has_defaulted):
+    return pd.DataFrame([[
+        age,
+        income,
+        loan_amount,
+        credit_score,
+        employed_months,
+        36,  # Default loan term
+        1 if has_defaulted == "Yes" else 0
+    ]], columns=df.columns[:-1])
 
 # Model training
-@st.cache_resource  # Cache model for performance
+@st.cache_resource
 def train_model():
-    df_processed = preprocess(df)
-    X = df_processed.drop('Churn', axis=1)
-    y = df_processed['Churn']
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
-    model = LogisticRegression(max_iter=1000)  # Increased iterations for stability
+    X = df.drop('Approved', axis=1)
+    y = df['Approved']
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    model = LogisticRegression(max_iter=1000)
     model.fit(X_train, y_train)
     return model, X_test, y_test
 
 model, X_test, y_test = train_model()
 
-# Prediction
-input_data = pd.DataFrame([[
-    tenure, monthly_charges, 0,  # Placeholder for TotalCharges
-    contract, online_security
-]], columns=['Tenure', 'MonthlyCharges', 'TotalCharges', 'Contract', 'OnlineSecurity'])
+# Prediction and results
+if submitted:
+    input_data = preprocess_input(age, income, loan_amount, credit_score, employed_months, has_defaulted)
+    prediction = model.predict(input_data)[0]
+    proba = model.predict_proba(input_data)[0][prediction]
+    
+    st.subheader("Prediction Result")
+    if prediction == 1:
+        st.success(f"✅ Approved (Confidence: {proba:.0%})")
+        st.balloons()
+    else:
+        st.error(f"❌ Denied (Confidence: {proba:.0%})")
+    
+    # Show key factors
+    st.write("Key Decision Factors:")
+    coef_df = pd.DataFrame({
+        'Feature': df.drop('Approved', axis=1).columns,
+        'Importance': model.coef_[0]
+    }).sort_values('Importance', ascending=False)
+    st.dataframe(coef_df)
+    
+    # Visualizations
+    fig, ax = plt.subplots(1, 2, figsize=(12, 4))
+    
+    # Approval rate by credit score
+    df['CreditScoreBucket'] = pd.cut(df['CreditScore'], bins=5)
+    approval_rates = df.groupby('CreditScoreBucket')['Approved'].mean()
+    approval_rates.plot(kind='bar', ax=ax[0], color='green')
+    ax[0].set_title("Approval Rate by Credit Score")
+    ax[0].set_ylabel("Approval Rate")
+    
+    # Income vs Loan Amount
+    ax[1].scatter(
+        df[df['Approved']==1]['Income'], 
+        df[df['Approved']==1]['LoanAmount'], 
+        color='green', label='Approved')
+    ax[1].scatter(
+        df[df['Approved']==0]['Income'], 
+        df[df['Approved']==0]['LoanAmount'], 
+        color='red', label='Denied')
+    ax[1].set_title("Income vs Loan Amount")
+    ax[1].set_xlabel("Income")
+    ax[1].set_ylabel("Loan Amount")
+    ax[1].legend()
+    
+    st.pyplot(fig)
 
-input_processed = preprocess(input_data)
-missing_cols = set(preprocess(df).columns) - set(input_processed.columns)
-for col in missing_cols:
-    if col != 'Churn':
-        input_processed[col] = 0
-input_processed = input_processed[preprocess(df).drop('Churn', axis=1).columns]
-
-prediction = model.predict(input_processed)[0]
-prob = model.predict_proba(input_processed)[0][prediction]
-
-# Display results
-st.success(f"Prediction: {'🚨 CHURN' if prediction else '✅ RETAIN'} (Confidence: {prob:.0%})")
-
-# Visualizations
-fig, ax = plt.subplots(1, 2, figsize=(12, 4))
-sns.boxplot(x='Churn', y='MonthlyCharges', data=df, ax=ax[0])
-ax[0].set_title('Monthly Charges by Churn Status')
-
-cm = confusion_matrix(y_test, model.predict(X_test))
-sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=ax[1])
-ax[1].set_title('Confusion Matrix')
-st.pyplot(fig)
+# Show raw data option
+if st.checkbox("Show sample loan data"):
+    st.dataframe(df.head(20))
